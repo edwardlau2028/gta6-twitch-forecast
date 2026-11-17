@@ -14,9 +14,15 @@ Model (per case):
   - For each hour h = 2..24, across the kept comparables:
         m_h = median(log(viewers_h / viewers_1))
         s_h = pstdev of those log ratios
-  - Scale adjustment (bigger hour-1 launches rise less):
-        m_h_adj = clamp(m_h - 0.25 * (log(p1) - med_log_p1), -0.7, 1.2)
+  - Scale adjustment (bigger hour-1 launches rise less), phased in over
+    the morning: the slope is 0 at hour 2 and ramps linearly to -0.25 by
+    hour 8, staying -0.25 after that, because in hours 2-4 the shape is
+    the timezone trickle and the dip is the same at any launch size,
+    while the scale effect belongs to the day's peak and plateau:
+        m_h_adj = clamp(m_h + slope(h) * (log(p1) - med_log_p1), -0.7, 1.2)
     where med_log_p1 is the median log hour-1 print of the kept set.
+    Leave-one-out on the 10 kept comparables: ramped 0.1880 vs 0.1985
+    with the full slope from hour 2, the gain all in hours 2-8.
   - Spread: s_h_adj = clamp(s_h, 0.30, 0.65); if the case's hour-1 print
     is more than 1 log unit from the kept median, widen by 0.05 per extra
     log unit, capped at +0.15.
@@ -59,7 +65,11 @@ SIGMA = 0.15
 
 # Scale adjustment: how much the median log ratio moves per log unit the
 # case's hour-1 print sits from the kept comparables' median hour-1 print.
+# The slope phases in over the morning (see slope_at): 0 at hour 2,
+# full strength from hour 8, since the scale effect belongs to the
+# day's peak, not the early timezone-trickle dip.
 SCALE_SLOPE = -0.25
+SCALE_RAMP_HOURS = 6
 # Bounds on the adjusted median log ratio.
 MEDIAN_MIN = -0.7
 MEDIAN_MAX = 1.2
@@ -92,6 +102,12 @@ def round2(x: float) -> float | int:
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else hi if x > hi else x
+
+
+def slope_at(h: int) -> float:
+    """The scale-adjustment slope for hour h: 0 at hour 2, ramping
+    linearly to SCALE_SLOPE by hour 2 + SCALE_RAMP_HOURS, flat after."""
+    return SCALE_SLOPE * min(1.0, max(0.0, (h - 2) / SCALE_RAMP_HOURS))
 
 
 def parse_time(s: str) -> datetime:
@@ -195,7 +211,7 @@ def forecast_case(case: dict, name: str) -> dict:
             ratios = [math.log(c[h - 1] / c[0]) for c in kept]
             m_h = statistics.median(ratios)
             s_h = statistics.pstdev(ratios) if len(ratios) > 1 else SIGMA
-            m_adj = clamp(m_h + SCALE_SLOPE * diff, MEDIAN_MIN, MEDIAN_MAX)
+            m_adj = clamp(m_h + slope_at(h) * diff, MEDIAN_MIN, MEDIAN_MAX)
             s_adj = clamp(s_h, SPREAD_MIN, SPREAD_MAX)
             if abs(diff) > SPREAD_EXTRA_THRESHOLD:
                 s_adj += min(SPREAD_EXTRA_CAP, SPREAD_EXTRA_PER_LOG * (abs(diff) - SPREAD_EXTRA_THRESHOLD))
